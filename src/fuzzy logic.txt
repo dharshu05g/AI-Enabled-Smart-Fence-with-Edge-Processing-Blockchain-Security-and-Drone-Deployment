@@ -1,0 +1,144 @@
+// Simple Fuzzy-Style Intrusion Detection on ESP32/Arduino
+// Sensors: PIR, Thermal, Vibration, Radar
+// ---- PIN CONFIG (change as per your wiring) ---- const int PIR_PIN = 34; // ESP32 analog-capable pin
+const int THERMAL_PIN = 35;
+const int VIB_PIN = 32;
+const int RADAR_PIN = 33;
+
+// ---- ADC RANGE (change if using classic Arduino: 0–1023) ---- const int ADC_MIN_VAL = 0;
+const int ADC_MAX_VAL = 4095; // ESP32 12-bit ADC
+
+// ---- NORMALIZATION TO [0,10] ----
+float normalizeTo10(int raw) {
+if (raw < ADC_MIN_VAL) raw = ADC_MIN_VAL;
+if (raw > ADC_MAX_VAL) raw = ADC_MAX_VAL;
+float x = (float)(raw - ADC_MIN_VAL) / (float)(ADC_MAX_VAL - ADC_MIN_VAL);
+return x * 10.0f;
+}
+
+// ---- TRIANGULAR MEMBERSHIP FUNCTION ----
+// a, b, c are the triangle points
+float tri_mf(float x, float a, float b, float c) {
+if (x <= a || x >= c) return 0.0f;
+else if (x == b) return 1.0f;
+else if (x > a && x < b) return (x - a) / (b - a);
+else return (c - x) / (c - b);
+}
+
+// ---- FUZZY INFERENCE ----
+// Returns intrusion score in [0,10]
+float fuzzyIntrusionScore(float pir, float thermal, float vibration, float radar) {
+
+45
+
+// Memberships for sensors
+float pir_low = tri_mf(pir, 0.0f, 0.0f, 4.0f);
+float pir_med = tri_mf(pir, 2.0f, 5.0f, 8.0f);
+float pir_high = tri_mf(pir, 6.0f, 10.0f, 10.0f);
+
+float th_low = tri_mf(thermal, 0.0f, 0.0f, 4.0f);
+float th_med = tri_mf(thermal, 2.0f, 5.0f, 8.0f);
+float th_high = tri_mf(thermal, 6.0f, 10.0f, 10.0f);
+
+float vib_low = tri_mf(vibration,0.0f, 0.0f, 4.0f);
+float vib_med = tri_mf(vibration,2.0f, 5.0f, 8.0f);
+float vib_high = tri_mf(vibration,6.0f, 10.0f, 10.0f);
+
+float rad_low = tri_mf(radar, 0.0f, 0.0f, 4.0f);
+float rad_med = tri_mf(radar, 2.0f, 5.0f, 8.0f);
+float rad_high = tri_mf(radar, 6.0f, 10.0f, 10.0f);
+
+// Output membership aggregations
+float mu_none = 0.0f;
+float mu_suspicious = 0.0f;
+float mu_confirmed = 0.0f;
+
+// Rule 1: (pir OR thermal OR radar) HIGH AND vibration HIGH -> confirmed
+{
+float cond = fmaxf(fmaxf(pir_high, th_high), rad_high);
+float rule_strength = fminf(cond, vib_high);
+mu_confirmed = fmaxf(mu_confirmed, rule_strength);
+}
+
+// Rule 2: moderate activity -> suspicious
+{
+float cond1 = fmaxf(fmaxf(pir_med, th_med), rad_med);
+float cond2 = fmaxf(vib_med, vib_high);
+float rule_strength = fminf(cond1, cond2);
+mu_suspicious = fmaxf(mu_suspicious, rule_strength);
+
+46
+
+}
+
+// Rule 3: all sensors low -> none
+{
+float rule_strength = fminf(fminf(pir_low, th_low), fminf(vib_low, rad_low));
+mu_none = fmaxf(mu_none, rule_strength);
+}
+
+// Rule 4: radar high & vibration low -> suspicious (stealth movement)
+{
+float rule_strength = fminf(rad_high, vib_low);
+mu_suspicious = fmaxf(mu_suspicious, rule_strength);
+}
+
+// Rule 5: thermal high & pir high -> confirmed intrusion
+{
+float rule_strength = fminf(th_high, pir_high);
+mu_confirmed = fmaxf(mu_confirmed, rule_strength);
+}
+
+// Defuzzification (simple weighted average of centers)
+float num = mu_none * 1.0f + mu_suspicious * 5.0f + mu_confirmed * 9.0f;
+float den = mu_none + mu_suspicious + mu_confirmed;
+if (den == 0.0f) return 0.0f;
+return num / den; // 0–10
+}
+
+// Convert score to crisp class: 0=none, 1=suspicious, 2=confirmed
+int classifyIntrusion(float score) {
+if (score < 3.0f) return 0;
+else if (score < 7.0f) return 1;
+else return 2;
+}
+
+void setup() {
+
+47
+
+Serial.begin(115200);
+delay(1000);
+Serial.println("Smart Fence Fuzzy Intrusion Detector");
+
+pinMode(PIR_PIN, INPUT);
+pinMode(THERMAL_PIN, INPUT);
+pinMode(VIB_PIN, INPUT);
+pinMode(RADAR_PIN, INPUT);
+}
+void loop() {
+int rawPir = analogRead(PIR_PIN);
+int rawThermal = analogRead(THERMAL_PIN);
+int rawVib = analogRead(VIB_PIN);
+int rawRadar = analogRead(RADAR_PIN);
+
+float pir = normalizeTo10(rawPir);
+float thermal = normalizeTo10(rawThermal);
+float vib = normalizeTo10(rawVib);
+float radar = normalizeTo10(rawRadar);
+
+float score = fuzzyIntrusionScore(pir, thermal, vib, radar);
+int cls = classifyIntrusion(score);
+
+Serial.print("PIR="); Serial.print(pir, 2);
+Serial.print(" TH="); Serial.print(thermal, 2);
+Serial.print(" VIB="); Serial.print(vib, 2);
+Serial.print(" RAD="); Serial.print(radar, 2);
+Serial.print(" | Score=");Serial.print(score, 2);
+Serial.print(" | Class=");Serial.println(cls);
+
+// Here you connect to buzzer / light / RF alert
+// if (cls == 2) { /* confirmed intrusion: trigger siren & radio */ }
+// else if (cls == 1) { /* suspicious: maybe soft alert */ }
+delay(500);
+}
